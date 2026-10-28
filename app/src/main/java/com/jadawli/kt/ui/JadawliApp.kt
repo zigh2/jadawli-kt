@@ -4,13 +4,13 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,12 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -36,31 +36,38 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jadawli.kt.MainViewModel
 import com.jadawli.kt.data.Col
+import com.jadawli.kt.data.ColsUi
+import com.jadawli.kt.data.GridUi
+import com.jadawli.kt.data.RowUi
 import com.jadawli.kt.data.TableEntity
-import com.jadawli.kt.data.cellKey
-import com.jadawli.kt.data.parseTable
 import kotlinx.coroutines.launch
+import java.time.LocalDate
 
 @Composable
 fun JadawliApp(vm: MainViewModel) {
@@ -85,17 +92,19 @@ fun JadawliApp(vm: MainViewModel) {
 fun DataScreen(vm: MainViewModel) {
     val tables by vm.tables.collectAsStateWithLifecycle()
     val cur by vm.current.collectAsStateWithLifecycle()
-    val cells by vm.cells.collectAsStateWithLifecycle()
+    val grid by vm.grid.collectAsStateWithLifecycle()
+    val c = cur
+    val g = grid
 
-    if (tables.isEmpty() || cur == null) {
+    if (tables.isEmpty() || c == null) {
         Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
             Text("لا توجد جداول بعد.\nاستورد نسخة جداولي الاحتياطية من الإعدادات.", textAlign = TextAlign.Center)
         }
         return
     }
     Column(Modifier.fillMaxSize()) {
-        TablePicker(tables, cur!!, vm::select)
-        Grid(cur!!, cells, vm)
+        TablePicker(tables, c, vm::select)
+        if (g != null && g.tableId == c.id) Grid(g, vm)
     }
 }
 
@@ -112,91 +121,164 @@ fun TablePicker(tables: List<TableEntity>, cur: TableEntity, onPick: (Long) -> U
     }
 }
 
-private val ROW_W = 150.dp
+private val NAME_W = 128.dp
 private val CELL_H = 44.dp
 
-@Composable
-fun Grid(table: TableEntity, cells: Map<String, String>, vm: MainViewModel) {
-    val doc = remember(table.json) { parseTable(table.json) }
-    val cols = remember(doc) { doc.columns.filter { it.name !in doc.keyCols } }
-    val line = MaterialTheme.colorScheme.outlineVariant
+private fun colW(c: Col): Dp = c.width.coerceIn(60, 220).dp
 
-    Column(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
-        Row {
-            HeaderCell("السطر", ROW_W)
-            cols.forEach { HeaderCell(it.name, it.width.coerceIn(60, 220).dp) }
+/**
+ * شبكة خفيفة: الخلية نص عادي فقط (لا حقول ولا Checkbox ولا قوائم لكل خلية).
+ * التعديل يتم بحوار واحد مشترك عند الضغط على الخلية، وعمود الأسطر ثابت أثناء التمرير الأفقي.
+ */
+@Composable
+fun Grid(g: GridUi, vm: MainViewModel) {
+    val scroll = rememberScrollState()
+    val line = MaterialTheme.colorScheme.outlineVariant
+    val today = remember { LocalDate.now().toString() }
+    var edit by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val latest = rememberUpdatedState(g)
+
+    val onCell: (String, Int) -> Unit = remember {
+        fun(row: String, ci: Int) {
+            val cur = latest.value
+            val col = cur.cols.list.getOrNull(ci) ?: return
+            if (col.type == "checkbox") {
+                val v = cur.rows.firstOrNull { it.name == row }?.vals?.getOrNull(ci) ?: ""
+                vm.setCell(cur.tableId, row, col.name, if (v == "1") "" else "1")
+            } else {
+                edit = Pair(row, ci)
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.height(CELL_H)) {
+            HeaderCell("السطر", NAME_W, line)
+            Row(Modifier.weight(1f).horizontalScroll(scroll)) {
+                g.cols.list.forEach { HeaderCell(it.name, colW(it), line) }
+            }
         }
         LazyColumn(Modifier.weight(1f)) {
-            items(doc.rows, key = { it }) { r ->
-                Row {
-                    Box(Modifier.width(ROW_W).height(CELL_H).border(0.5.dp, line).padding(horizontal = 6.dp), contentAlignment = Alignment.CenterStart) {
-                        Text(r, fontSize = 13.sp, maxLines = 2)
-                    }
-                    cols.forEach { c ->
-                        CellView(c, cells[cellKey(table.id, r, c.name)] ?: "", c.width.coerceIn(60, 220).dp) { v ->
-                            vm.setCell(table.id, r, c.name, v)
-                        }
-                    }
-                }
+            items(g.rows, key = { it.name }) { row ->
+                GridRow(row, g.cols, scroll, line, today, onCell)
+            }
+        }
+    }
+
+    val e = edit
+    if (e != null) {
+        val col = g.cols.list.getOrNull(e.second)
+        if (col == null) {
+            edit = null
+        } else {
+            val initial = g.rows.firstOrNull { it.name == e.first }?.vals?.getOrNull(e.second) ?: ""
+            EditDialog(
+                rowName = e.first, col = col, initial = initial,
+                onDismiss = { edit = null },
+                onSave = { v -> vm.setCell(g.tableId, e.first, col.name, v); edit = null }
+            )
+        }
+    }
+}
+
+@Composable
+fun HeaderCell(text: String, w: Dp, line: Color) {
+    Box(
+        Modifier.width(w).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant)
+            .drawBehind {
+                drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), 1f)
+                drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1f)
+            }.padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center
+    ) { Text(text, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center) }
+}
+
+@Composable
+fun GridRow(row: RowUi, cols: ColsUi, scroll: ScrollState, line: Color, today: String, onCell: (String, Int) -> Unit) {
+    val isToday = row.name.startsWith(today)
+    val hi = MaterialTheme.colorScheme.primaryContainer
+    Row(Modifier.height(CELL_H)) {
+        Box(
+            (if (isToday) Modifier.width(NAME_W).fillMaxHeight().background(hi) else Modifier.width(NAME_W).fillMaxHeight())
+                .drawBehind {
+                    drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), 1f)
+                    drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1f)
+                }.padding(horizontal = 6.dp),
+            contentAlignment = Alignment.CenterStart
+        ) { Text(row.name, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+        Row(Modifier.weight(1f).horizontalScroll(scroll)) {
+            cols.list.forEachIndexed { i, c -> ValueCell(c, row.vals[i], i, row.name, line, onCell) }
+        }
+    }
+}
+
+@Composable
+fun ValueCell(col: Col, value: String, idx: Int, rowName: String, line: Color, onCell: (String, Int) -> Unit) {
+    val tint = col.tints[value]
+    var m = Modifier.width(colW(col)).fillMaxHeight()
+    if (tint != null) m = m.background(Color(tint))
+    m = m.drawBehind {
+        drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), 1f)
+        drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1f)
+    }.clickable { onCell(rowName, idx) }
+    Box(m, contentAlignment = Alignment.Center) {
+        if (value.isNotEmpty()) {
+            if (col.type == "checkbox") {
+                Text("✓", color = Color(0xFF16A34A), fontSize = 18.sp)
+            } else {
+                Text(value, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 4.dp))
             }
         }
     }
 }
 
 @Composable
-fun HeaderCell(text: String, w: androidx.compose.ui.unit.Dp) {
-    Box(
-        Modifier.width(w).height(CELL_H).background(MaterialTheme.colorScheme.surfaceVariant)
-            .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant).padding(horizontal = 4.dp),
-        contentAlignment = Alignment.Center
-    ) { Text(text, fontSize = 12.sp, maxLines = 2, textAlign = TextAlign.Center) }
-}
-
-@Composable
-fun CellView(col: Col, value: String, w: androidx.compose.ui.unit.Dp, onChange: (String) -> Unit) {
-    val line = MaterialTheme.colorScheme.outlineVariant
-    val tint: Color? = col.colors[value]?.let { hex ->
-        runCatching { Color(android.graphics.Color.parseColor(hex)).copy(alpha = 0.28f) }.getOrNull()
+fun EditDialog(rowName: String, col: Col, initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    if (col.type == "select" && col.options.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text(col.name + " — " + rowName, fontSize = 14.sp) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    col.options.forEach { o ->
+                        TextButton(onClick = { onSave(o) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (o == initial) "● $o" else o)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { onSave("") }) { Text("مسح") } },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+        )
+    } else {
+        var text by remember { mutableStateOf(initial) }
+        val fr = remember { FocusRequester() }
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text(col.name + " — " + rowName, fontSize = 14.sp) },
+            text = {
+                Box {
+                    OutlinedTextField(
+                        value = text, onValueChange = { text = it }, singleLine = true,
+                        modifier = Modifier.focusRequester(fr),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = if (col.type == "number") KeyboardType.Number else KeyboardType.Text,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(onDone = { onSave(text.trim()) })
+                    )
+                    LaunchedEffect(Unit) { try { fr.requestFocus() } catch (e: Exception) { } }
+                }
+            },
+            confirmButton = { TextButton(onClick = { onSave(text.trim()) }) { Text("حفظ") } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { onSave("") }) { Text("مسح") }
+                    TextButton(onClick = onDismiss) { Text("إلغاء") }
+                }
+            }
+        )
     }
-    val base = Modifier.width(w).height(CELL_H).border(0.5.dp, line)
-    Box(if (tint != null) base.background(tint) else base, contentAlignment = Alignment.Center) {
-        when {
-            col.type == "checkbox" ->
-                Checkbox(checked = value == "1", onCheckedChange = { onChange(if (it) "1" else "") })
-            col.type == "select" && col.options.isNotEmpty() -> SelectCell(col.options, value, onChange)
-            else -> TextCell(col.type, value, onChange)
-        }
-    }
-}
-
-@Composable
-fun SelectCell(options: List<String>, value: String, onChange: (String) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxSize().clickable { open = true }, contentAlignment = Alignment.Center) {
-        Text(value.ifEmpty { "—" }, fontSize = 13.sp, maxLines = 1)
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            DropdownMenuItem(text = { Text("—") }, onClick = { onChange(""); open = false })
-            options.forEach { o -> DropdownMenuItem(text = { Text(o) }, onClick = { onChange(o); open = false }) }
-        }
-    }
-}
-
-@Composable
-fun TextCell(type: String, stored: String, onChange: (String) -> Unit) {
-    var text by remember(stored) { mutableStateOf(stored) }
-    val kb = if (type == "number") KeyboardType.Number else KeyboardType.Text
-    BasicTextField(
-        value = text,
-        onValueChange = { text = it },
-        singleLine = true,
-        textStyle = TextStyle(fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, textAlign = TextAlign.Center),
-        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-        keyboardOptions = KeyboardOptions(keyboardType = kb, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { if (text != stored) onChange(text) }),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
-            .onFocusChanged { if (!it.isFocused && text != stored) onChange(text) },
-        decorationBox = { inner -> Box(contentAlignment = Alignment.Center) { inner() } }
-    )
 }
 
 /* ---------------- الإعدادات ---------------- */
