@@ -1,0 +1,101 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write      # لحفظ المشروع المستخرج من الملف المضغوط في المستودع
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # رفع ملف .zip إلى incoming يستبدل المشروع كله ثم يُبنى التطبيق.
+      # (مجلدا .github و incoming لا يتأثران، فتعديل ملف البناء نفسه يتم يدوياً.)
+      - name: Import project from incoming zip (if any)
+        run: |
+          shopt -s nullglob
+          zips=(incoming/*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "لا يوجد ملف zip في incoming — سيُبنى المشروع الحالي."
+            exit 0
+          fi
+          z="${zips[${#zips[@]}-1]}"
+          echo "استيراد: $z"
+          rm -rf "$RUNNER_TEMP/imp" && mkdir -p "$RUNNER_TEMP/imp"
+          unzip -q "$z" -d "$RUNNER_TEMP/imp"
+          sg=$(find "$RUNNER_TEMP/imp" -name settings.gradle.kts | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+          if [ -z "$sg" ] || [ ! -d "$(dirname "$sg")/app" ]; then
+            echo "::error::الملف المضغوط لا يحوي مشروع أندرويد (لم أجد settings.gradle.kts بجانب مجلد app)."
+            exit 1
+          fi
+          root=$(dirname "$sg")
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name incoming -exec rm -rf {} +
+          for f in "$root"/* "$root"/.[!.]*; do
+            case "$(basename "$f")" in .git|.github|incoming) continue ;; esac
+            cp -a "$f" ./
+          done
+          rm -f incoming/*.zip
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "تحديث المشروع من $(basename "$z")" || echo "لا تغييرات في الملفات"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      # التوقيع اختياري: بدون الأسرار يُوقَّع الملف بمفتاح التصحيح (يُثبَّت عادياً لكن لا يصلح للترقية لاحقاً بمفتاحك).
+      - name: Signing (optional)
+        env:
+          KS: ${{ secrets.KEYSTORE_BASE64 }}
+          SP: ${{ secrets.KEYSTORE_PASSWORD }}
+          KA: ${{ secrets.KEY_ALIAS }}
+          KP: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS" ] && [ -n "$SP" ] && [ -n "$KA" ] && [ -n "$KP" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/jd.keystore"
+            echo "JD_KEYSTORE=$RUNNER_TEMP/jd.keystore" >> "$GITHUB_ENV"
+            echo "JD_STORE_PASS=$SP" >> "$GITHUB_ENV"
+            echo "JD_KEY_ALIAS=$KA" >> "$GITHUB_ENV"
+            echo "JD_KEY_PASS=$KP" >> "$GITHUB_ENV"
+            echo "التوقيع: بمفتاحك الخاص"
+          else
+            echo "التوقيع: مفتاح التصحيح (الأسرار غير مضافة)"
+          fi
+
+      - name: Build APK
+        run: |
+          set -o pipefail
+          mkdir -p out
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee out/build.log
+          cp app/build/outputs/apk/release/app-release.apk "out/jadawli-kt-${{ github.run_number }}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: jadawli-kt-apk
+          path: out/*.apk
+          if-no-files-found: error
+
+      - name: Upload logs (only on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: out/*.log
+          if-no-files-found: ignore
