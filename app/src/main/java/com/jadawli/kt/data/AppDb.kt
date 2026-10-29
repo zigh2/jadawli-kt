@@ -46,6 +46,21 @@ interface JDao {
     @Query("DELETE FROM notes")
     suspend fun clearNotes()
 
+    @Query("SELECT * FROM notes WHERE t = :t AND kind = 'row'")
+    fun rowNotes(t: Long): Flow<List<NoteEntity>>
+
+    @Query("SELECT v FROM cells WHERE k = :k")
+    suspend fun cellValue(k: String): String?
+
+    @Query("SELECT text FROM notes WHERE t = :t AND kind = 'row' AND r = :r LIMIT 1")
+    suspend fun rowNoteText(t: Long, r: String): String?
+
+    @Query("DELETE FROM notes WHERE t = :t AND kind = 'row' AND r = :r")
+    suspend fun deleteRowNote(t: Long, r: String)
+
+    @Upsert
+    suspend fun upsertNote(n: NoteEntity)
+
     @Query("SELECT COALESCE(MAX(id), 0) FROM jtables")
     suspend fun maxTableId(): Long
 }
