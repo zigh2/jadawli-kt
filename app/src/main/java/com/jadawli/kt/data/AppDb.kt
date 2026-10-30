@@ -61,6 +61,27 @@ interface JDao {
     @Upsert
     suspend fun upsertNote(n: NoteEntity)
 
+    @Query("SELECT * FROM jtables WHERE id = :id")
+    suspend fun tableById(id: Long): TableEntity?
+
+    @Query("UPDATE cells SET c = :nw, k = t || char(1) || r || char(1) || :nw WHERE t = :t AND c = :old")
+    suspend fun renameColumn(t: Long, old: String, nw: String)
+
+    @Query("DELETE FROM cells WHERE t = :t AND c = :c")
+    suspend fun deleteColumnCells(t: Long, c: String)
+
+    @Query("DELETE FROM cells WHERE t = :t AND r = :r")
+    suspend fun deleteRowCells(t: Long, r: String)
+
+    @Query("DELETE FROM cells WHERE t = :t")
+    suspend fun deleteCellsOfTable(t: Long)
+
+    @Query("DELETE FROM notes WHERE t = :t")
+    suspend fun deleteNotesOfTable(t: Long)
+
+    @Query("DELETE FROM jtables WHERE id = :id")
+    suspend fun deleteTable(id: Long)
+
     @Query("SELECT COALESCE(MAX(id), 0) FROM jtables")
     suspend fun maxTableId(): Long
 }

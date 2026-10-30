@@ -10,7 +10,11 @@ import com.jadawli.kt.data.CellEntity
 import com.jadawli.kt.data.ColsUi
 import com.jadawli.kt.data.GridUi
 import com.jadawli.kt.data.NoteEntity
+import com.jadawli.kt.data.TInfo
+import com.jadawli.kt.data.TableCodec
+import com.jadawli.kt.data.TableDef
 import com.jadawli.kt.data.TableDoc
+import com.jadawli.kt.data.Tpl
 import com.jadawli.kt.data.TableEntity
 import com.jadawli.kt.data.buildGrid
 import com.jadawli.kt.data.cellKey
@@ -30,6 +34,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import androidx.room.withTransaction
+import org.json.JSONObject
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = AppDb.get(app)
@@ -145,6 +151,90 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun undo() = step(true)
     fun redo() = step(false)
+
+    /* ---------------- إدارة الجداول والقوالب ---------------- */
+
+    val infos: StateFlow<List<TInfo>> = tables.map { l ->
+        l.map { t ->
+            val o = JSONObject(t.json)
+            val rs = o.optJSONArray("rows")
+            val ms = HashSet<String>()
+            if (rs != null) for (i in 0 until rs.length()) {
+                val r = rs.optString(i, "")
+                if (r.length >= 7 && r[4] == '-') ms.add(r.substring(0, 7))
+            }
+            TInfo(t.id, t.title, o.optBoolean("isTemplate", false), ms)
+        }
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, share, emptyList())
+
+    val templates: Pair<List<String>, List<Tpl>> by lazy { TableCodec.loadTemplates(getApplication<Application>()) }
+
+    fun taken(title: String, exceptId: Long? = null): Boolean =
+        tables.value.any { it.title == title && it.id != exceptId }
+
+    fun uniqueTitle(base: String): String {
+        var n = base
+        var k = 2
+        while (taken(n)) n = "$base (${k++})"
+        return n
+    }
+
+    fun monthCovered(y: Int, m: Int): Boolean {
+        val key = "%04d-%02d".format(y, m)
+        return infos.value.any { !it.isTemplate && key in it.months }
+    }
+
+    suspend fun tableDef(id: Long): TableDef? = dao.tableById(id)?.let { TableCodec.fromJson(it.json, it.id) }
+
+    suspend fun saveTable(def: TableDef): Long = lock.withLock {
+        db.withTransaction {
+            val old = def.id?.let { dao.tableById(it) }
+            val id = def.id ?: (dao.maxTableId() + 1)
+            if (old != null) {
+                val oldDef = TableCodec.fromJson(old.json, old.id)
+                val keep = def.cols.mapNotNull { it.orig }.toSet()
+                for (oc in oldDef.cols) if (oc.name !in keep) dao.deleteColumnCells(id, oc.name)
+                val renames = def.cols.filter { it.orig != null && it.orig != it.name }
+                renames.forEachIndexed { i, c -> dao.renameColumn(id, c.orig!!, "\u0002tmp$i") }
+                renames.forEachIndexed { i, c -> dao.renameColumn(id, "\u0002tmp$i", c.name) }
+                val keepRows = def.rows.toSet()
+                for (r in oldDef.rows) if (r !in keepRows) { dao.deleteRowCells(id, r); dao.deleteRowNote(id, r) }
+            }
+            val json = TableCodec.toJson(def, id, old?.let { JSONObject(it.json) })
+            dao.insertTables(listOf(TableEntity(id, def.title, json.toString(), System.currentTimeMillis())))
+            id
+        }
+    }
+
+    fun deleteTable(id: Long) {
+        viewModelScope.launch {
+            lock.withLock {
+                db.withTransaction { dao.deleteCellsOfTable(id); dao.deleteNotesOfTable(id); dao.deleteTable(id) }
+                undoL.removeAll { it.t == id }
+                syncHist()
+            }
+        }
+    }
+
+    suspend fun duplicateTable(id: Long) {
+        val d = tableDef(id) ?: return
+        var n = d.title + " (نسخة)"
+        var k = 2
+        while (taken(n)) n = d.title + " (نسخة " + (k++) + ")"
+        saveTable(d.copy(id = null, title = n, cols = d.cols.map { it.copy(orig = null) }))
+    }
+
+    suspend fun generateMonth(srcId: Long, name: String, m: Int, y: Int): Long {
+        val d = tableDef(srcId) ?: return -1
+        return saveTable(TableDef(null, name, false, d.cols.map { it.copy(orig = null) }, TableCodec.monthRows(y, m)))
+    }
+
+    suspend fun createFromTemplate(x: Tpl, name: String, m: Int, y: Int, asTemplate: Boolean): Long {
+        val cols = TableCodec.keyCols() + x.cols
+        return saveTable(TableDef(null, name, asTemplate, cols, if (asTemplate) emptyList() else TableCodec.monthRows(y, m)))
+    }
+
+    fun openTable(id: Long) { select(id); viewMode.value = null }
 
     /* ---------------- الاستيراد ---------------- */
 

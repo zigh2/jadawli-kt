@@ -1,6 +1,7 @@
 package com.jadawli.kt.ui
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ScrollState
@@ -81,19 +82,41 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
+sealed interface Route {
+    object Library : Route
+    data class Edit(val id: Long?) : Route
+}
+
 @Composable
 fun JadawliApp(vm: MainViewModel) {
     var tab by remember { mutableIntStateOf(0) }
+    var route by remember { mutableStateOf<Route?>(null) }
+    BackHandler(enabled = route != null) { route = null }
     Scaffold(
         bottomBar = {
             NavigationBar {
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Text("📋") }, label = { Text("البيانات") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, icon = { Text("⚙️") }, label = { Text("الإعدادات") })
+                NavigationBarItem(selected = tab == 0, onClick = { tab = 0; route = null }, icon = { Text("📋") }, label = { Text("البيانات") })
+                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; route = null }, icon = { Text("📈") }, label = { Text("الإحصائيات") })
+                NavigationBarItem(selected = tab == 2, onClick = { tab = 2; route = null }, icon = { Text("🗂️") }, label = { Text("الجداول") })
+                NavigationBarItem(selected = tab == 3, onClick = { tab = 3; route = null }, icon = { Text("⚙️") }, label = { Text("الإعدادات") })
             }
         }
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
-            if (tab == 0) DataScreen(vm) else SettingsScreen(vm)
+            val r = route
+            if (r is Route.Library) {
+                LibraryScreen(vm, onBack = { route = null }, onCreated = { route = null; tab = 0 })
+            } else if (r is Route.Edit) {
+                EditScreen(vm, r.id, onDone = { route = null })
+            } else if (tab == 0) {
+                DataScreen(vm)
+            } else if (tab == 1) {
+                StatsScreen(vm)
+            } else if (tab == 2) {
+                ManageScreen(vm, onEdit = { route = Route.Edit(it) }, onLibrary = { route = Route.Library }, onGenerated = { tab = 0 })
+            } else {
+                SettingsScreen(vm)
+            }
         }
     }
 }
@@ -179,11 +202,19 @@ fun DataScreen(vm: MainViewModel) {
             edit = null
         } else {
             val initial = gg.rows.firstOrNull { it.name == e.first }?.vals?.getOrNull(e.second) ?: ""
-            EditDialog(
-                rowName = e.first, col = col, initial = initial,
-                onDismiss = { edit = null },
-                onSave = { v -> vm.setCell(gg.tableId, e.first, col.name, v); edit = null }
-            )
+            if (col.type == "duration" || col.type == "time") {
+                HmDialog(
+                    title = col.name + " — " + e.first, isDuration = col.type == "duration", initial = initial,
+                    onDismiss = { edit = null },
+                    onSave = { v -> vm.setCell(gg.tableId, e.first, col.name, v); edit = null }
+                )
+            } else {
+                EditDialog(
+                    rowName = e.first, col = col, initial = initial,
+                    onDismiss = { edit = null },
+                    onSave = { v -> vm.setCell(gg.tableId, e.first, col.name, v); edit = null }
+                )
+            }
         }
     }
     val nr = noteRow
