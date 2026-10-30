@@ -88,7 +88,7 @@ sealed interface Route {
 }
 
 @Composable
-fun JadawliApp(vm: MainViewModel) {
+fun JadawliApp(vm: MainViewModel, sec: com.jadawli.kt.security.Sec) {
     var tab by remember { mutableIntStateOf(0) }
     var route by remember { mutableStateOf<Route?>(null) }
     BackHandler(enabled = route != null) { route = null }
@@ -115,7 +115,7 @@ fun JadawliApp(vm: MainViewModel) {
             } else if (tab == 2) {
                 ManageScreen(vm, onEdit = { route = Route.Edit(it) }, onLibrary = { route = Route.Library }, onGenerated = { tab = 0 })
             } else {
-                SettingsScreen(vm)
+                SettingsScreen(vm, sec)
             }
         }
     }
@@ -503,65 +503,3 @@ fun NoteDialog(rowName: String, initial: String, onDismiss: () -> Unit, onSave: 
     )
 }
 
-/* ---------------- الإعدادات ---------------- */
-
-@Composable
-fun SettingsScreen(vm: MainViewModel) {
-    val tables by vm.tables.collectAsStateWithLifecycle()
-    val notes by vm.noteCount.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
-    var pending by remember { mutableStateOf<Uri?>(null) }
-    var pass by remember { mutableStateOf("") }
-    var replace by remember { mutableStateOf(true) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) { pending = uri; pass = ""; replace = tables.isEmpty() }
-    }
-
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("الإعدادات", fontSize = 22.sp)
-        Text("الجداول: ${tables.size}   •   الملاحظات: $notes")
-        Button(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy) { Text("♻️ استيراد نسخة احتياطية من جداولي") }
-        Text("يقبل الملف المشفّر (zip) الذي أنشأه جداولي، أو ملف JSON.", fontSize = 12.sp)
-    }
-
-    if (pending != null) {
-        AlertDialog(
-            onDismissRequest = { if (!busy) pending = null },
-            title = { Text("استيراد نسخة احتياطية") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = pass, onValueChange = { pass = it }, singleLine = true,
-                        label = { Text("كلمة سر النسخة (إن كانت مشفّرة)") },
-                        visualTransformation = PasswordVisualTransformation()
-                    )
-                    if (tables.isNotEmpty()) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = !replace, onClick = { replace = false }); Text("إضافتها إلى الموجود")
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = replace, onClick = { replace = true }); Text("استبدال كل البيانات الحالية")
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(enabled = !busy, onClick = {
-                    val u = pending ?: return@TextButton
-                    busy = true
-                    scope.launch {
-                        msg = vm.import(u, pass, replace)
-                        busy = false; pending = null
-                    }
-                }) { Text(if (busy) "جارٍ الاستيراد…" else "استيراد") }
-            },
-            dismissButton = { TextButton(enabled = !busy, onClick = { pending = null }) { Text("إلغاء") } }
-        )
-    }
-    if (msg != null) {
-        AlertDialog(onDismissRequest = { msg = null }, confirmButton = { TextButton(onClick = { msg = null }) { Text("حسناً") } }, text = { Text(msg ?: "") })
-    }
-}

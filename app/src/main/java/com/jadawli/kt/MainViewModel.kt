@@ -10,6 +10,7 @@ import com.jadawli.kt.data.CellEntity
 import com.jadawli.kt.data.ColsUi
 import com.jadawli.kt.data.GridUi
 import com.jadawli.kt.data.NoteEntity
+import com.jadawli.kt.data.Exporter
 import com.jadawli.kt.data.TInfo
 import com.jadawli.kt.data.TableCodec
 import com.jadawli.kt.data.TableDef
@@ -36,6 +37,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import androidx.room.withTransaction
 import org.json.JSONObject
+import kotlinx.coroutines.withContext
+import com.jadawli.kt.security.Sec
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = AppDb.get(app)
@@ -51,7 +54,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .stateIn(viewModelScope, share, null)
 
     /** null = تلقائي (بطاقة إن كانت الأعمدة أكثر من 8، وإلا جدول). */
-    val viewMode = MutableStateFlow<String?>(null)
+    val viewMode = MutableStateFlow<String?>(Sec.get(app).defaultView.value.let { if (it == "table" || it == "card") it else null })
     /** فهرس السطر في عرض البطاقة؛ null = اليوم. */
     val cardIdx = MutableStateFlow<Int?>(null)
 
@@ -236,13 +239,59 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openTable(id: Long) { select(id); viewMode.value = null }
 
+    /* ---------------- التصدير ---------------- */
+
+    private fun appCtx(): Application = getApplication<Application>()
+
+    /** password != null: zip مشفّر AES-256، وإلا JSON عادي. */
+    suspend fun exportBackup(uri: Uri, password: String?): String = withContext(Dispatchers.IO) {
+        try {
+            val json = Exporter.backupJson(dao.allTables(), dao.allCells(), dao.allNotes(), Sec.get(appCtx()).settingsJson())
+            if (password != null) {
+                Exporter.writeZip(appCtx(), json, password, uri)
+            } else {
+                val os = appCtx().contentResolver.openOutputStream(uri) ?: throw IllegalStateException("تعذّر الكتابة في الملف")
+                os.use { it.write(json.toByteArray(Charsets.UTF_8)) }
+            }
+            "تم حفظ النسخة الاحتياطية"
+        } catch (e: Exception) {
+            e.message ?: "تعذّر التصدير"
+        }
+    }
+
+    suspend fun exportCsv(uri: Uri): String = withContext(Dispatchers.IO) {
+        try {
+            val t = current.value ?: return@withContext "لا يوجد جدول لتصديره"
+            val d = TableCodec.fromJson(t.json, t.id)
+            val text = Exporter.csv(d, dao.cellsList(t.id))
+            val os = appCtx().contentResolver.openOutputStream(uri) ?: throw IllegalStateException("تعذّر الكتابة في الملف")
+            os.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+            "تم تصدير الجدول"
+        } catch (e: Exception) {
+            e.message ?: "تعذّر التصدير"
+        }
+    }
+
+    fun deleteAll() {
+        viewModelScope.launch {
+            lock.withLock {
+                db.withTransaction { dao.clearCells(); dao.clearNotes(); dao.clearTables() }
+                undoL.clear(); redoL.clear(); syncHist()
+            }
+        }
+    }
+
     /* ---------------- الاستيراد ---------------- */
 
     suspend fun import(uri: Uri, pass: String, replace: Boolean): String = try {
         val p = BackupImport.read(getApplication(), uri, pass)
         BackupImport.apply(db, p, replace)
         p.settings?.let {
-            getApplication<Application>().getSharedPreferences("imported", 0).edit().putString("settings", it.toString()).apply()
+            val sec = Sec.get(getApplication<Application>())
+            val th = it.optString("theme", "")
+            if (th == "auto" || th == "light" || th == "dark") sec.setTheme(th)
+            val vw = it.optString("view", "")
+            if (vw == "table" || vw == "card") sec.setDefaultView(vw)
         }
         undoL.clear(); redoL.clear(); syncHist()
         "تم استيراد ${p.tables.size} جدولاً و${p.cells.size} خلية و${p.notes.size} ملاحظة"

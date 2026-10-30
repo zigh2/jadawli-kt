@@ -82,6 +82,18 @@ interface JDao {
     @Query("DELETE FROM jtables WHERE id = :id")
     suspend fun deleteTable(id: Long)
 
+    @Query("SELECT * FROM jtables ORDER BY id")
+    suspend fun allTables(): List<TableEntity>
+
+    @Query("SELECT * FROM cells")
+    suspend fun allCells(): List<CellEntity>
+
+    @Query("SELECT * FROM notes")
+    suspend fun allNotes(): List<NoteEntity>
+
+    @Query("SELECT * FROM cells WHERE t = :t")
+    suspend fun cellsList(t: Long): List<CellEntity>
+
     @Query("SELECT COALESCE(MAX(id), 0) FROM jtables")
     suspend fun maxTableId(): Long
 }
