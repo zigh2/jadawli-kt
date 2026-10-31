@@ -24,6 +24,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -38,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jadawli.kt.MainViewModel
+import com.jadawli.kt.data.AutoBackup
 import com.jadawli.kt.security.Bio
 import com.jadawli.kt.security.Sec
 import com.jadawli.kt.security.findActivity
@@ -72,6 +76,7 @@ fun SettingsScreen(vm: MainViewModel, sec: Sec) {
     val bioOn by sec.bioOn.collectAsStateWithLifecycle()
     val disguise by sec.disguiseScreen.collectAsStateWithLifecycle()
     val iconDis by sec.disguiseIcon.collectAsStateWithLifecycle()
+    val clock12 by sec.clock12.collectAsStateWithLifecycle()
     val secure by sec.secure.collectAsStateWithLifecycle()
     val canBio = Bio.can(ctx)
     val today = remember { LocalDate.now().toString() }
@@ -79,7 +84,9 @@ fun SettingsScreen(vm: MainViewModel, sec: Sec) {
 
     var pinFlow by remember { mutableStateOf<String?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
-    var exportPassDlg by remember { mutableStateOf(false) }
+    var passFor by remember { mutableStateOf<String?>(null) }
+    var bk by remember { mutableIntStateOf(0) }
+    var bkBusy by remember { mutableStateOf(false) }
     var pendingPass by remember { mutableStateOf<String?>(null) }
     var delStep by remember { mutableIntStateOf(0) }
     var pending by remember { mutableStateOf<Uri?>(null) }
@@ -95,6 +102,9 @@ fun SettingsScreen(vm: MainViewModel, sec: Sec) {
     }
     val createJson = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) { scope.launch { msg = vm.exportBackup(uri, null) } }
+    }
+    val createPdf = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
+        if (uri != null) { scope.launch { msg = vm.exportPdf(uri) } }
     }
     val createCsv = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
         if (uri != null) { scope.launch { msg = vm.exportCsv(uri) } }
@@ -116,9 +126,17 @@ fun SettingsScreen(vm: MainViewModel, sec: Sec) {
         )
         Text("العرض الافتراضي للبيانات", fontSize = 13.sp)
         PickerButton(
-            when (defView) { "table" -> "جدول"; "card" -> "بطاقة"; else -> "تلقائي (بحسب عدد الأعمدة)" },
-            listOf("auto" to "تلقائي (بحسب عدد الأعمدة)", "table" to "جدول", "card" to "بطاقة"),
+            when (defView) { "table" -> "جدول"; "card" -> "بطاقة"; "all" -> "كل البطاقات"; else -> "تلقائي (بحسب عدد الأعمدة)" },
+            listOf("auto" to "تلقائي (بحسب عدد الأعمدة)", "table" to "جدول", "card" to "بطاقة", "all" to "كل البطاقات"),
             { sec.setDefaultView(it); vm.viewMode.value = if (it == "auto") null else it }
+        )
+
+        Text("حجم الجدول", fontSize = 13.sp)
+        val zoom by sec.zoom.collectAsStateWithLifecycle()
+        PickerButton(
+            "${Math.round(zoom * 100)}%",
+            listOf(0.8f to "80%", 1f to "100%", 1.25f to "125%", 1.5f to "150%"),
+            { sec.setZoom(it) }
         )
 
         SectionTitle("الأمان")
@@ -159,11 +177,62 @@ fun SettingsScreen(vm: MainViewModel, sec: Sec) {
         Text("القفل والتمويه يخفيان الواجهة فقط، ولا يشفّران البيانات المخزّنة على الجهاز.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         SectionTitle("النسخ الاحتياطي والتصدير")
-        Button(onClick = { exportPassDlg = true }, modifier = Modifier.fillMaxWidth()) { Text("⬇️ نسخة احتياطية مشفّرة (zip)") }
+        Button(onClick = { passFor = "zip" }, modifier = Modifier.fillMaxWidth()) { Text("⬇️ نسخة احتياطية مشفّرة (zip)") }
         OutlinedButton(onClick = { createJson.launch("jadawli-backup-$today.json") }, modifier = Modifier.fillMaxWidth()) { Text("نسخة احتياطية JSON (غير مشفّرة)") }
         OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("⬆️ استيراد نسخة احتياطية") }
         OutlinedButton(onClick = { createCsv.launch("jadawli-$today.csv") }, modifier = Modifier.fillMaxWidth()) { Text("تصدير الجدول الحالي (CSV)") }
+        OutlinedButton(onClick = { createPdf.launch("jadawli-$today.pdf") }, modifier = Modifier.fillMaxWidth()) { Text("تصدير الجدول الحالي (PDF)") }
         Text("النسخة المشفّرة بصيغة جداولي نفسها (AES-256) وتُفتح بـ 7-Zip، ويقبلها جداولي القديم.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        SectionTitle("المنبهات")
+        SwitchRow("عرض الوقت بنظام 12 ساعة", "في شاشة المنبهات فقط؛ الجداول دائماً 24 ساعة", clock12) { sec.setClock12(it) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { openSystemSettings(ctx, "notif") }) { Text("إعدادات الإشعارات") }
+            OutlinedButton(onClick = { openSystemSettings(ctx, "battery") }) { Text("توفير البطارية") }
+        }
+
+        SectionTitle("النسخ الاحتياطي التلقائي")
+        val bkTick = bk
+        val autoOn = AutoBackup.isOn(ctx) && bkTick >= 0
+        SwitchRow(
+            "نسخ احتياطي يومي تلقائي",
+            "عند الخروج من التطبيق مرة يومياً إن تغيّرت البيانات، في Download/Jadawli/Backup (أندرويد 10+)",
+            autoOn
+        ) { on ->
+            if (on) {
+                if (AutoBackup.hasPass(ctx)) { AutoBackup.setOn(ctx, true); bk++ } else { passFor = "auto" }
+            } else {
+                AutoBackup.setOn(ctx, false)
+                bk++
+            }
+        }
+        OutlinedButton(onClick = { passFor = "auto" }, modifier = Modifier.fillMaxWidth()) {
+            Text(if (AutoBackup.hasPass(ctx)) "تغيير كلمة سر النسخ التلقائي" else "تعيين كلمة سر النسخ التلقائي")
+        }
+        OutlinedTextField(
+            value = AutoBackup.keep(ctx).toString() + (if (bkTick < 0) "" else ""),
+            onValueChange = { v -> AutoBackup.setKeep(ctx, v.filter { c -> c.isDigit() }.take(3).toIntOrNull() ?: 1); bk++ },
+            label = { Text("عدد النسخ المحتفظ بها (الأقدم تُحذف)") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+        val last = AutoBackup.lastAt(ctx)
+        Text(
+            "آخر نسخة: " + (if (last == 0L) "لا يوجد" else SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(last))) +
+                (if (AutoBackup.lastWhere(ctx).isNotEmpty()) "\n" + AutoBackup.lastWhere(ctx) else ""),
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Button(
+            onClick = {
+                scope.launch {
+                    bkBusy = true
+                    msg = vm.backupNow(false) ?: "لا جديد لنسخه"
+                    bkBusy = false
+                    bk++
+                }
+            },
+            enabled = !bkBusy, modifier = Modifier.fillMaxWidth()
+        ) { Text(if (bkBusy) "جارٍ النسخ…" else "💾 نسخ احتياطي الآن") }
+        Text("كلمة السر تُحفظ داخل التطبيق لتشفير النسخ التلقائية. النسخ بصيغة zip مشفّرة AES-256 وتُفتح بـ 7-Zip.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         SectionTitle("البيانات")
         OutlinedButton(onClick = { delStep = 1 }, modifier = Modifier.fillMaxWidth()) { Text("🗑️ حذف كل البيانات", color = MaterialTheme.colorScheme.error) }
@@ -197,14 +266,21 @@ fun SettingsScreen(vm: MainViewModel, sec: Sec) {
     }
 
     /* ---- كلمة سر النسخة المشفّرة ---- */
-    if (exportPassDlg) {
+    if (passFor != null) {
         ExportPassDialog(
             onOk = { pw ->
-                exportPassDlg = false
-                pendingPass = pw
-                createZip.launch("jadawli-backup-$today.zip")
+                val kind = passFor
+                passFor = null
+                if (kind == "auto") {
+                    AutoBackup.setPass(ctx, pw)
+                    AutoBackup.setOn(ctx, true)
+                    bk++
+                } else {
+                    pendingPass = pw
+                    createZip.launch("jadawli-backup-$today.zip")
+                }
             },
-            onCancel = { exportPassDlg = false }
+            onCancel = { passFor = null }
         )
     }
 

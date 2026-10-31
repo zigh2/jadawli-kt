@@ -42,23 +42,36 @@ object Exporter {
         return root.toString()
     }
 
-    fun writeZip(ctx: Context, json: String, password: String, out: Uri) {
+    fun makeZipFile(ctx: Context, json: String, password: String): File {
         val tmp = File.createTempFile("bk", ".zip", ctx.cacheDir)
         tmp.delete()
+        val zf = ZipFile(tmp, password.toCharArray())
+        val zp = ZipParameters()
+        zp.compressionMethod = CompressionMethod.DEFLATE
+        zp.isEncryptFiles = true
+        zp.encryptionMethod = EncryptionMethod.AES
+        zp.aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
+        zp.fileNameInZip = "backup.json"
+        zf.addStream(ByteArrayInputStream(json.toByteArray(Charsets.UTF_8)), zp)
+        return tmp
+    }
+
+    fun writeZip(ctx: Context, json: String, password: String, out: Uri) {
+        val tmp = makeZipFile(ctx, json, password)
         try {
-            val zf = ZipFile(tmp, password.toCharArray())
-            val zp = ZipParameters()
-            zp.compressionMethod = CompressionMethod.DEFLATE
-            zp.isEncryptFiles = true
-            zp.encryptionMethod = EncryptionMethod.AES
-            zp.aesKeyStrength = AesKeyStrength.KEY_STRENGTH_256
-            zp.fileNameInZip = "backup.json"
-            zf.addStream(ByteArrayInputStream(json.toByteArray(Charsets.UTF_8)), zp)
             val os = ctx.contentResolver.openOutputStream(out) ?: throw IllegalStateException("تعذّر الكتابة في الملف")
             os.use { o -> tmp.inputStream().use { it.copyTo(o) } }
         } finally {
             tmp.delete()
         }
+    }
+
+    /** إعدادات النسخة: المظهر والعرض والساعة والمنبهات (بأسماء جداولي). */
+    fun settings(ctx: Context): JSONObject {
+        val o = com.jadawli.kt.security.Sec.get(ctx).settingsJson()
+        com.jadawli.kt.alarm.AlarmStore.ensure(ctx)
+        o.put("alarms", com.jadawli.kt.alarm.AlarmStore.toJson(com.jadawli.kt.alarm.AlarmStore.list.value))
+        return o
     }
 
     private fun q(s: String): String = "\"" + s.replace("\"", "\"\"") + "\""

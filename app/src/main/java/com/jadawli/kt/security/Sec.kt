@@ -25,6 +25,8 @@ class Sec private constructor(private val app: Context) {
     val secure = MutableStateFlow(p.getBoolean("secure", false))
     val theme = MutableStateFlow(p.getString("theme", "auto") ?: "auto")
     val defaultView = MutableStateFlow(p.getString("defaultView", "auto") ?: "auto")
+    val clock12 = MutableStateFlow(p.getBoolean("clock12", true))
+    val zoom = MutableStateFlow(p.getFloat("zoom", 1f))
     val locked = MutableStateFlow(lockOn.value || disguiseScreen.value)
 
     private fun putB(k: String, v: Boolean) { p.edit().putBoolean(k, v).apply() }
@@ -33,6 +35,8 @@ class Sec private constructor(private val app: Context) {
     fun setBioOn(v: Boolean) { bioOn.value = v; putB("bioOn", v) }
     fun setDisguiseScreen(v: Boolean) { disguiseScreen.value = v; putB("disguiseScreen", v) }
     fun setSecure(v: Boolean) { secure.value = v; putB("secure", v) }
+    fun setClock12(v: Boolean) { clock12.value = v; putB("clock12", v) }
+    fun setZoom(v: Float) { zoom.value = v; p.edit().putFloat("zoom", v).apply() }
     fun setTheme(v: String) { theme.value = v; p.edit().putString("theme", v).apply() }
     fun setDefaultView(v: String) { defaultView.value = v; p.edit().putString("defaultView", v).apply() }
 
@@ -101,6 +105,7 @@ class Sec private constructor(private val app: Context) {
         val o = JSONObject()
         o.put("theme", theme.value)
         if (defaultView.value != "auto") o.put("view", defaultView.value)
+        o.put("clock12", clock12.value)
         return o
     }
 

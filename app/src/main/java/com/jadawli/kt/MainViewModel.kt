@@ -10,6 +10,12 @@ import com.jadawli.kt.data.CellEntity
 import com.jadawli.kt.data.ColsUi
 import com.jadawli.kt.data.GridUi
 import com.jadawli.kt.data.NoteEntity
+import com.jadawli.kt.alarm.AlarmDef
+import com.jadawli.kt.alarm.AlarmEngine
+import com.jadawli.kt.alarm.AlarmStore
+import com.jadawli.kt.alarm.LinkRes
+import com.jadawli.kt.alarm.LinkTable
+import com.jadawli.kt.data.AutoBackup
 import com.jadawli.kt.data.Exporter
 import com.jadawli.kt.data.TInfo
 import com.jadawli.kt.data.TableCodec
@@ -54,7 +60,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .stateIn(viewModelScope, share, null)
 
     /** null = تلقائي (بطاقة إن كانت الأعمدة أكثر من 8، وإلا جدول). */
-    val viewMode = MutableStateFlow<String?>(Sec.get(app).defaultView.value.let { if (it == "table" || it == "card") it else null })
+    val viewMode = MutableStateFlow<String?>(Sec.get(app).defaultView.value.let { if (it == "table" || it == "card" || it == "all") it else null })
     /** فهرس السطر في عرض البطاقة؛ null = اليوم. */
     val cardIdx = MutableStateFlow<Int?>(null)
 
@@ -90,6 +96,73 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun select(id: Long) { selectedId.value = id; cardIdx.value = null }
 
+    /* ---------------- المنبهات ---------------- */
+
+    val alarms: StateFlow<List<AlarmDef>> = AlarmStore.list
+    private val doneCache = HashMap<String, Boolean>()
+
+    init {
+        AlarmStore.ensure(app)
+        viewModelScope.launch { lock.withLock { syncDone() } }
+    }
+
+    fun saveAlarms(l: List<AlarmDef>) {
+        AlarmStore.save(getApplication<Application>(), l)
+        viewModelScope.launch { lock.withLock { doneCache.clear(); syncDone() } }
+    }
+
+    private class Cand(val t: TableEntity, val uid: String, val doc: TableDoc, val row: String)
+
+    private suspend fun resolve(a: AlarmDef): LinkRes? {
+        val l = a.link ?: return null
+        val today = java.time.LocalDate.now().toString()
+        val cands = ArrayList<Cand>()
+        for (t in dao.allTables()) {
+            val o = JSONObject(t.json)
+            if (o.optBoolean("isTemplate", false)) continue
+            val d = parseTable(t.json)
+            val row = d.rows.firstOrNull { it.contains(today) } ?: continue
+            cands.add(Cand(t, o.optString("uid", ""), d, row))
+        }
+        val has = { c: Cand -> c.doc.columns.any { it.name == l.col } }
+        val hit = cands.firstOrNull { it.uid == l.uid && has(it) }
+            ?: cands.firstOrNull { TableCodec.baseName(it.t.title) == TableCodec.baseName(l.title) && has(it) }
+            ?: return null
+        return LinkRes(hit.t.id, hit.row, hit.doc.columns.first { it.name == l.col })
+    }
+
+    suspend fun resolveLink(a: AlarmDef): LinkRes? = resolve(a)
+
+    suspend fun cellValue(t: Long, r: String, c: String): String = dao.cellValue(cellKey(t, r, c)) ?: ""
+
+    /** يخبر المحرك أن منبّه اليوم «سُجِّل» (فلا يرنّ) متى امتلأت خلية العمود المرتبط. */
+    private suspend fun syncDone() {
+        val linked = AlarmStore.list.value.filter { it.link != null }
+        if (linked.isEmpty()) return
+        val today = java.time.LocalDate.now().toString()
+        for (a in linked) {
+            val r = resolve(a)
+            val done = r != null && AlarmStore.isFilled(r.col, dao.cellValue(cellKey(r.tableId, r.row, r.col.name)))
+            val k = a.id + today
+            if (doneCache[k] == done) continue
+            doneCache[k] = done
+            AlarmEngine.setDone(getApplication<Application>(), a.id, today, done)
+        }
+    }
+
+    /** الجداول القابلة للربط بمنبّه (غير القوالب) مع أعمدتها المعروضة. */
+    suspend fun linkables(): List<LinkTable> = withContext(Dispatchers.Default) {
+        dao.allTables().mapNotNull { t ->
+            val o = JSONObject(t.json)
+            if (o.optBoolean("isTemplate", false)) null
+            else LinkTable(o.optString("uid", ""), t.title, displayCols(parseTable(t.json)).map { it.name })
+        }
+    }
+
+    /* ---------------- النسخ الاحتياطي التلقائي ---------------- */
+
+    suspend fun backupNow(auto: Boolean): String? = AutoBackup.run(getApplication<Application>(), db, auto)
+
     /* ---------------- التراجع والتقدّم (في الذاكرة، كما في جداولي) ---------------- */
 
     private data class Hist(val kind: String, val t: Long, val r: String, val c: String, val old: String, val nw: String, val at: Long)
@@ -120,6 +193,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val old = dao.cellValue(k) ?: ""
         if (hist && old != v) pushHist(Hist("cell", t, r, c, old, v, System.currentTimeMillis()))
         if (v.isEmpty()) dao.deleteCell(k) else dao.upsertCell(CellEntity(k, t, r, c, v, System.currentTimeMillis()))
+        syncDone()
     }
 
     private suspend fun writeNote(t: Long, r: String, text: String, hist: Boolean) {
@@ -246,7 +320,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** password != null: zip مشفّر AES-256، وإلا JSON عادي. */
     suspend fun exportBackup(uri: Uri, password: String?): String = withContext(Dispatchers.IO) {
         try {
-            val json = Exporter.backupJson(dao.allTables(), dao.allCells(), dao.allNotes(), Sec.get(appCtx()).settingsJson())
+            val json = Exporter.backupJson(dao.allTables(), dao.allCells(), dao.allNotes(), Exporter.settings(appCtx()))
             if (password != null) {
                 Exporter.writeZip(appCtx(), json, password, uri)
             } else {
@@ -272,6 +346,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    suspend fun exportPdf(uri: Uri): String = withContext(Dispatchers.IO) {
+        try {
+            val t = current.value ?: return@withContext "لا يوجد جدول لتصديره"
+            val doc = parseTable(t.json)
+            val g = buildGrid(t.id, doc, ColsUi(displayCols(doc)), dao.cellsList(t.id), emptySet())
+            val today = java.time.LocalDate.now().toString()
+            com.jadawli.kt.data.PdfExport.write(appCtx(), uri, t.title, "${g.rows.size} يوماً  •  $today", g, today)
+            "تم تصدير PDF"
+        } catch (e: Exception) {
+            e.message ?: "تعذّر إنشاء PDF"
+        }
+    }
+
+    /** يغيّر عرض عمود واحد في بنية الجدول (دون المساس ببقية حقول الجدول). */
+    fun setColumnWidth(tableId: Long, colName: String, w: Int) {
+        viewModelScope.launch {
+            lock.withLock {
+                val t = dao.tableById(tableId) ?: return@withLock
+                val o = JSONObject(t.json)
+                val cs = o.optJSONArray("columns") ?: return@withLock
+                for (i in 0 until cs.length()) {
+                    val c = cs.getJSONObject(i)
+                    if (c.optString("name") == colName) c.put("width", w.toString())
+                }
+                val now = System.currentTimeMillis()
+                o.put("u", now)
+                dao.insertTables(listOf(TableEntity(t.id, t.title, o.toString(), now)))
+            }
+        }
+    }
+
     fun deleteAll() {
         viewModelScope.launch {
             lock.withLock {
@@ -292,6 +397,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             if (th == "auto" || th == "light" || th == "dark") sec.setTheme(th)
             val vw = it.optString("view", "")
             if (vw == "table" || vw == "card") sec.setDefaultView(vw)
+            if (it.has("clock12")) sec.setClock12(it.optBoolean("clock12", true))
+            val al = it.optJSONArray("alarms")
+            if (al != null) AlarmStore.save(getApplication<Application>(), AlarmStore.parse(al.toString()))
         }
         undoL.clear(); redoL.clear(); syncHist()
         "تم استيراد ${p.tables.size} جدولاً و${p.cells.size} خلية و${p.notes.size} ملاحظة"

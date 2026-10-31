@@ -94,6 +94,15 @@ interface JDao {
     @Query("SELECT * FROM cells WHERE t = :t")
     suspend fun cellsList(t: Long): List<CellEntity>
 
+    @Query("SELECT COALESCE(MAX(u), 0) FROM cells")
+    suspend fun maxCellU(): Long
+
+    @Query("SELECT COALESCE(MAX(u), 0) FROM notes")
+    suspend fun maxNoteU(): Long
+
+    @Query("SELECT COALESCE(MAX(u), 0) FROM jtables")
+    suspend fun maxTableU(): Long
+
     @Query("SELECT COALESCE(MAX(id), 0) FROM jtables")
     suspend fun maxTableId(): Long
 }

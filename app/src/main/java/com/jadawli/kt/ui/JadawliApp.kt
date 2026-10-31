@@ -55,7 +55,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -95,10 +97,11 @@ fun JadawliApp(vm: MainViewModel, sec: com.jadawli.kt.security.Sec) {
     Scaffold(
         bottomBar = {
             NavigationBar {
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0; route = null }, icon = { Text("📋") }, label = { Text("البيانات") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; route = null }, icon = { Text("📈") }, label = { Text("الإحصائيات") })
-                NavigationBarItem(selected = tab == 2, onClick = { tab = 2; route = null }, icon = { Text("🗂️") }, label = { Text("الجداول") })
-                NavigationBarItem(selected = tab == 3, onClick = { tab = 3; route = null }, icon = { Text("⚙️") }, label = { Text("الإعدادات") })
+                NavigationBarItem(selected = tab == 0, onClick = { tab = 0; route = null }, icon = { Text("📋") }, label = { Text("البيانات", fontSize = 10.sp) })
+                NavigationBarItem(selected = tab == 1, onClick = { tab = 1; route = null }, icon = { Text("📈") }, label = { Text("الإحصائيات", fontSize = 10.sp) })
+                NavigationBarItem(selected = tab == 2, onClick = { tab = 2; route = null }, icon = { Text("🗂️") }, label = { Text("الجداول", fontSize = 10.sp) })
+                NavigationBarItem(selected = tab == 3, onClick = { tab = 3; route = null }, icon = { Text("⏰") }, label = { Text("المنبهات", fontSize = 10.sp) })
+                NavigationBarItem(selected = tab == 4, onClick = { tab = 4; route = null }, icon = { Text("⚙️") }, label = { Text("الإعدادات", fontSize = 10.sp) })
             }
         }
     ) { pad ->
@@ -114,6 +117,8 @@ fun JadawliApp(vm: MainViewModel, sec: com.jadawli.kt.security.Sec) {
                 StatsScreen(vm)
             } else if (tab == 2) {
                 ManageScreen(vm, onEdit = { route = Route.Edit(it) }, onLibrary = { route = Route.Library }, onGenerated = { tab = 0 })
+            } else if (tab == 3) {
+                AlarmsScreen(vm, sec)
             } else {
                 SettingsScreen(vm, sec)
             }
@@ -134,6 +139,9 @@ fun DataScreen(vm: MainViewModel) {
     val viewSel by vm.viewMode.collectAsStateWithLifecycle()
     val cardSel by vm.cardIdx.collectAsStateWithLifecycle()
 
+    val sec = remember { com.jadawli.kt.security.Sec.get(vm.getApplication<android.app.Application>()) }
+    val zoom by sec.zoom.collectAsStateWithLifecycle()
+    var widthCol by remember { mutableStateOf<Int?>(null) }
     val today = remember { LocalDate.now().toString() }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -165,7 +173,8 @@ fun DataScreen(vm: MainViewModel) {
         return
     }
 
-    val isCard = if (viewSel != null) viewSel == "card" else ((gg?.cols?.list?.size ?: 0) > 8)
+    val mode: String = viewSel ?: (if ((gg?.cols?.list?.size ?: 0) > 8) "card" else "table")
+    val isCard = mode == "card"
     val todayIdx = gg?.rows?.indexOfFirst { it.name.contains(today) } ?: -1
 
     Column(Modifier.fillMaxSize()) {
@@ -173,7 +182,14 @@ fun DataScreen(vm: MainViewModel) {
             Box(Modifier.weight(1f)) { TablePicker(tables, c, vm::select) }
             TextButton(onClick = { vm.undo() }, enabled = canUndo) { Text("↩", fontSize = 18.sp) }
             TextButton(onClick = { vm.redo() }, enabled = canRedo) { Text("↪", fontSize = 18.sp) }
-            TextButton(onClick = { vm.viewMode.value = if (isCard) "table" else "card" }) { Text(if (isCard) "☰" else "🗂", fontSize = 18.sp) }
+            TextButton(onClick = { vm.viewMode.value = if (mode == "table") "card" else if (mode == "card") "all" else "table" }) {
+                Text(if (mode == "table") "☰" else if (mode == "card") "🗂" else "🗃", fontSize = 18.sp)
+            }
+            TextButton(onClick = {
+                val steps = listOf(0.8f, 1f, 1.25f, 1.5f)
+                val i = steps.indexOfFirst { Math.abs(it - zoom) < 0.01f }
+                sec.setZoom(steps[(i + 1) % steps.size])
+            }) { Text("🔍", fontSize = 16.sp) }
             TextButton(onClick = {
                 if (isCard) {
                     vm.cardIdx.value = null
@@ -189,8 +205,10 @@ fun DataScreen(vm: MainViewModel) {
                     val idx = (cardSel ?: todayIdx.coerceAtLeast(0)).coerceIn(0, n - 1)
                     DayCard(gg, idx, vm, today, notes, { vm.cardIdx.value = it.coerceIn(0, n - 1) }, onCell)
                 }
+            } else if (mode == "all") {
+                AllCards(gg, listState, vm, today, onCell)
             } else {
-                Grid(gg, listState, today, onCell, onNote)
+                Grid(gg, listState, today, zoom, onCell, onNote) { widthCol = it }
             }
         }
     }
@@ -202,7 +220,13 @@ fun DataScreen(vm: MainViewModel) {
             edit = null
         } else {
             val initial = gg.rows.firstOrNull { it.name == e.first }?.vals?.getOrNull(e.second) ?: ""
-            if (col.type == "duration" || col.type == "time") {
+            if (col.type == "date") {
+                DateDialog(
+                    title = col.name + " — " + e.first, initial = initial,
+                    onDismiss = { edit = null },
+                    onSave = { v -> vm.setCell(gg.tableId, e.first, col.name, v); edit = null }
+                )
+            } else if (col.type == "duration" || col.type == "time") {
                 HmDialog(
                     title = col.name + " — " + e.first, isDuration = col.type == "duration", initial = initial,
                     onDismiss = { edit = null },
@@ -215,6 +239,15 @@ fun DataScreen(vm: MainViewModel) {
                     onSave = { v -> vm.setCell(gg.tableId, e.first, col.name, v); edit = null }
                 )
             }
+        }
+    }
+    val wc = widthCol
+    if (wc != null && gg != null) {
+        val wcol = gg.cols.list.getOrNull(wc)
+        if (wcol == null) {
+            widthCol = null
+        } else {
+            WidthDialog(wcol, onDismiss = { widthCol = null }, onSave = { w -> vm.setColumnWidth(gg.tableId, wcol.name, w); widthCol = null })
         }
     }
     val nr = noteRow
@@ -243,67 +276,70 @@ fun TablePicker(tables: List<TableEntity>, cur: TableEntity, onPick: (Long) -> U
 private val NAME_W = 128.dp
 private val CELL_H = 44.dp
 
-private fun colW(c: Col): Dp = c.width.coerceIn(60, 220).dp
+private fun colW(c: Col, z: Float): Dp = (c.width.coerceIn(40, 400) * z).dp
 
-/** شبكة خفيفة: الخلية نص عادي، التعديل بحوار واحد مشترك، وعمود الأسطر ثابت أثناء التمرير الأفقي. */
+/** شبكة خفيفة: الخلية نص عادي، التعديل بحوار واحد مشترك، وعمود الأسطر ثابت أثناء التمرير الأفقي. z = التكبير. */
 @Composable
-fun Grid(g: GridUi, listState: LazyListState, today: String, onCell: (String, Int) -> Unit, onNote: (String) -> Unit) {
+fun Grid(
+    g: GridUi, listState: LazyListState, today: String, z: Float,
+    onCell: (String, Int) -> Unit, onNote: (String) -> Unit, onHeader: (Int) -> Unit
+) {
     val scroll = rememberScrollState()
     val line = MaterialTheme.colorScheme.outlineVariant
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.height(CELL_H)) {
-            HeaderCell("السطر", NAME_W, line)
+        Row(Modifier.height(CELL_H * z)) {
+            HeaderCell("السطر", NAME_W * z, line, z) { }
             Row(Modifier.weight(1f).horizontalScroll(scroll)) {
-                g.cols.list.forEach { HeaderCell(it.name, colW(it), line) }
+                g.cols.list.forEachIndexed { i, c -> HeaderCell(c.name, colW(c, z), line, z) { onHeader(i) } }
             }
         }
         LazyColumn(Modifier.weight(1f), state = listState) {
             items(g.rows, key = { it.name }) { row ->
-                GridRow(row, g.cols, scroll, line, today, onCell, onNote)
+                GridRow(row, g.cols, scroll, line, today, z, onCell, onNote)
             }
         }
     }
 }
 
 @Composable
-fun HeaderCell(text: String, w: Dp, line: Color) {
+fun HeaderCell(text: String, w: Dp, line: Color, z: Float, onClick: () -> Unit) {
     Box(
         Modifier.width(w).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant)
             .drawBehind {
                 drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), 1f)
                 drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1f)
-            }.padding(horizontal = 4.dp),
+            }.clickable { onClick() }.padding(horizontal = 4.dp),
         contentAlignment = Alignment.Center
-    ) { Text(text, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center) }
+    ) { Text(text, fontSize = (12 * z).sp, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center) }
 }
 
 @Composable
 fun GridRow(
-    row: RowUi, cols: ColsUi, scroll: ScrollState, line: Color, today: String,
+    row: RowUi, cols: ColsUi, scroll: ScrollState, line: Color, today: String, z: Float,
     onCell: (String, Int) -> Unit, onNote: (String) -> Unit
 ) {
     val isToday = row.name.contains(today)
     val hi = MaterialTheme.colorScheme.primaryContainer
-    Row(Modifier.height(CELL_H)) {
-        var nm = Modifier.width(NAME_W).fillMaxHeight()
+    Row(Modifier.height(CELL_H * z)) {
+        var nm = Modifier.width(NAME_W * z).fillMaxHeight()
         if (isToday) nm = nm.background(hi)
         nm = nm.drawBehind {
             drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), 1f)
             drawLine(line, Offset(0f, 0f), Offset(0f, size.height), 1f)
         }.clickable { onNote(row.name) }.padding(horizontal = 6.dp)
         Box(nm, contentAlignment = Alignment.CenterStart) {
-            Text((if (row.hasNote) "📝 " else "") + row.name, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text((if (row.hasNote) "📝 " else "") + row.name, fontSize = (12 * z).sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Row(Modifier.weight(1f).horizontalScroll(scroll)) {
-            cols.list.forEachIndexed { i, c -> ValueCell(c, row.vals[i], i, row.name, line, onCell) }
+            cols.list.forEachIndexed { i, c -> ValueCell(c, row.vals[i], i, row.name, line, z, onCell) }
         }
     }
 }
 
 @Composable
-fun ValueCell(col: Col, value: String, idx: Int, rowName: String, line: Color, onCell: (String, Int) -> Unit) {
+fun ValueCell(col: Col, value: String, idx: Int, rowName: String, line: Color, z: Float, onCell: (String, Int) -> Unit) {
     val tint = col.tints[value]
-    var m = Modifier.width(colW(col)).fillMaxHeight()
+    var m = Modifier.width(colW(col, z)).fillMaxHeight()
     if (tint != null) m = m.background(Color(tint))
     m = m.drawBehind {
         drawLine(line, Offset(0f, size.height), Offset(size.width, size.height), 1f)
@@ -311,10 +347,52 @@ fun ValueCell(col: Col, value: String, idx: Int, rowName: String, line: Color, o
     }.clickable { onCell(rowName, idx) }
     Box(m, contentAlignment = Alignment.Center) {
         if (col.type == "checkbox") {
-            if (value == "1") Text("✓", color = Color(0xFF16A34A), fontSize = 18.sp)
+            if (value == "1") Text("✓", color = Color(0xFF16A34A), fontSize = (18 * z).sp)
         } else if (value.isNotEmpty()) {
-            Text(showVal(col, value), fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 4.dp))
+            Text(showVal(col, value), fontSize = (13 * z).sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 4.dp))
         }
+    }
+}
+
+/* ---------------- كل البطاقات (قائمة بطاقات الأيام) ---------------- */
+
+@Composable
+fun AllCards(g: GridUi, listState: LazyListState, vm: MainViewModel, today: String, onCell: (String, Int) -> Unit) {
+    val cols = g.cols.list
+    val anyGroup = cols.any { it.group.isNotEmpty() }
+    val cb = cols.indices.filter { cols[it].type == "checkbox" }
+    val hi = MaterialTheme.colorScheme.primaryContainer
+    val base = MaterialTheme.colorScheme.surfaceVariant
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 10.dp), state = listState,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(g.rows, key = { it.name }) { row ->
+            val done = cb.count { row.vals[it] == "1" }
+            val isToday = row.name.contains(today)
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (isToday) hi else base).padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        (if (row.hasNote) "📝 " else "") + "📌 " + row.name + (if (isToday) "  • اليوم" else ""),
+                        modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.Bold
+                    )
+                    if (cb.isNotEmpty()) Text("$done / ${cb.size}")
+                }
+                if (cb.isNotEmpty()) {
+                    LinearProgressIndicator(progress = { done.toFloat() / cb.size }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+                }
+                var last = ""
+                cols.forEachIndexed { i, c ->
+                    val grp = if (c.group.isNotEmpty()) c.group else if (anyGroup) "أخرى" else ""
+                    if (grp.isNotEmpty() && grp != last) {
+                        Text(grp, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp, bottom = 2.dp))
+                    }
+                    last = grp
+                    FieldRow(c, row.vals[i], i, row.name, onCell) { name, v -> vm.setCell(g.tableId, row.name, name, v) }
+                }
+            }
+        }
+        item { Box(Modifier.padding(8.dp)) }
     }
 }
 

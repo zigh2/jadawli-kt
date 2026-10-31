@@ -40,6 +40,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jadawli.kt.MainViewModel
+import com.jadawli.kt.alarm.AlarmDef
+import com.jadawli.kt.alarm.AlarmLaunch
+import androidx.compose.foundation.lazy.items
 import com.jadawli.kt.security.Bio
 import com.jadawli.kt.security.Sec
 import com.jadawli.kt.security.Verify
@@ -47,19 +50,23 @@ import com.jadawli.kt.security.findActivity
 import kotlinx.coroutines.delay
 import java.time.LocalTime
 
-/** يعرض التطبيق أو شاشة القفل/التمويه بحسب الحالة. */
+/** يعرض شاشة التنبيه أو التطبيق أو شاشة القفل/التمويه بحسب الحالة. */
 @Composable
 fun GateHost(sec: Sec, vm: MainViewModel) {
     val locked by sec.locked.collectAsStateWithLifecycle()
-    if (!locked) {
+    val pend by AlarmLaunch.pending.collectAsStateWithLifecycle()
+    val p = pend
+    if (p != null) {
+        AlertHost(vm, sec, p)
+    } else if (!locked) {
         JadawliApp(vm, sec)
     } else {
-        UnlockHost(sec)
+        UnlockHost(sec, vm)
     }
 }
 
 @Composable
-private fun UnlockHost(sec: Sec) {
+private fun UnlockHost(sec: Sec, vm: MainViewModel) {
     val ctx = LocalContext.current
     val lockOn by sec.lockOn.collectAsStateWithLifecycle()
     val bioOn by sec.bioOn.collectAsStateWithLifecycle()
@@ -93,7 +100,7 @@ private fun UnlockHost(sec: Sec) {
     }
 
     if (disguise) {
-        DisguiseScreen(onUnlock = { begin() })
+        DisguiseScreen(vm, sec, onUnlock = { begin() })
         if (pinDlg) {
             PinDialog(sec, "أدخل الرمز", onOk = { pinDlg = false; sec.unlock() }, onCancel = { pinDlg = false })
         }
@@ -214,22 +221,12 @@ fun PinSetDialog(onDone: (String) -> Unit, onCancel: () -> Unit) {
 
 /* ---------------- شاشة التمويه (تبدو كتطبيق منبّه) ---------------- */
 
-private class FakeAlarm(val time: String, val label: String, on: Boolean) {
-    var on by mutableStateOf(on)
-}
-
 @Composable
-fun DisguiseScreen(onUnlock: () -> Unit) {
-    var now by remember { mutableStateOf(LocalTime.now()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = LocalTime.now()
-            delay(1000)
-        }
-    }
-    val alarms = remember {
-        mutableStateListOf(FakeAlarm("05:00", "الاستيقاظ", true), FakeAlarm("06:30", "العمل", false), FakeAlarm("07:15", "تذكير", false))
-    }
+fun DisguiseScreen(vm: MainViewModel, sec: Sec, onUnlock: () -> Unit) {
+    val alarms by vm.alarms.collectAsStateWithLifecycle()
+    val c12 by sec.clock12.collectAsStateWithLifecycle()
+    var edit by remember { mutableStateOf<AlarmDef?>(null) }
+    var creating by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             // الضغط المطول على أيقونة الساعة يفتح التطبيق
@@ -238,23 +235,26 @@ fun DisguiseScreen(onUnlock: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) { Text("⏰", fontSize = 24.sp) }
             Text("المنبّه", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
-            Button(onClick = { alarms.add(FakeAlarm("07:00", "منبّه", false)) }) { Text("＋ منبّه") }
+            Button(onClick = { creating = true }) { Text("＋ منبّه") }
         }
-        Box(Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
-            Text("%02d:%02d".format(now.hour, now.minute), fontSize = 64.sp, fontWeight = FontWeight.Light)
-        }
-        alarms.forEach { a ->
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant).padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(a.time, fontSize = 28.sp)
-                    Text(a.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Switch(checked = a.on, onCheckedChange = { a.on = it })
+        Box(Modifier.fillMaxWidth().padding(vertical = 12.dp)) { ClockCard(c12) }
+        androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (alarms.isEmpty()) {
+                item { Text("لا توجد منبهات", modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            items(alarms, key = { it.id }) { a ->
+                AlarmCard(a, c12, false, onClick = { edit = a }, onToggle = { on -> vm.saveAlarms(alarms.map { if (it.id == a.id) it.copy(on = on) else it }) })
             }
         }
+    }
+    if (creating) {
+        AlarmEditDialog(null, true, null, c12, onSave = { n -> vm.saveAlarms(alarms + n); creating = false }, onDelete = null, onDismiss = { creating = false })
+    }
+    val e = edit
+    if (e != null) {
+        AlarmEditDialog(e, true, null, c12,
+            onSave = { n -> vm.saveAlarms(alarms.map { if (it.id == n.id) n else it }); edit = null },
+            onDelete = { vm.saveAlarms(alarms.filter { it.id != e.id }); edit = null },
+            onDismiss = { edit = null })
     }
 }
